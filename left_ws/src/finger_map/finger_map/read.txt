@@ -1,0 +1,35 @@
+header:
+  stamp:
+    sec: 1768574821
+    nanosec: 595951525
+  frame_id: ''
+name:
+- index_proximal_joint
+- index_intermediate_joint
+- middle_proximal_joint
+- middle_intermediate_joint
+- pinky_proximal_joint
+- pinky_intermediate_joint
+- ring_proximal_joint
+- ring_intermediate_joint
+- thumb_proximal_yaw_joint
+- thumb_proximal_pitch_joint
+- thumb_intermediate_joint
+- thumb_distal_joint
+position:
+- 0.6802794337272644
+- 0.6783605146914721
+- 0.7988776564598083
+- 0.8045478376966715
+- 0.9898942112922668
+- 1.007787541872859
+- 0.8462689518928528
+- 0.8549717021244765
+- 0.7231397032737732
+- 0.12713338434696198
+- 0.1695959347188473
+- 0.08479796735942365
+velocity: []
+effort: []
+---
+

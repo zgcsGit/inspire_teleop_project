@@ -1,0 +1,41 @@
+# ROS / colcon build outputs
+build/
+install/
+log/
+**/build/
+**/install/
+**/log/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor / local assistant state
+.history/
+.vscode/
+.idea/
+*.swp
+*~
+.agents/
+.codex/
+
+# Recorded runtime data and analysis outputs
+left_ws/src/analysis/
+left_ws/src/train/
+left_ws/src/multi_modal_data_collection/data/
+left_ws/src/**/touch_logs/
+*.bag
+*.db3
+*.mcap
+*.mp4
+*.avi
+*.mov
+*.pt
+*.pth
+
+# Local environment files
+.env
+*.local

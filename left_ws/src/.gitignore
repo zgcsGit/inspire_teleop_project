@@ -1,0 +1,54 @@
+# ROS 2 workspace outputs
+build/
+install/
+log/
+logs/
+
+# Python cache and local tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE/editor history
+.history/
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local/generated git metadata
+.agents/
+.codex/
+
+# Large recorded datasets and generated analysis artifacts
+multi_modal_data_collection/data/
+train/
+analysis/**/*_result/
+analysis/arm_result/
+analysis/hand_result/
+*.bag
+*.db3
+*.mcap
+*.mp4
+*.avi
+*.mov
+*.npy
+*.npz
+*.pt
+*.pth
+
+# Keep calibration files when explicitly unignored in package-level docs.
+# Add exceptions here if a small npz/csv is required for runtime.
+
+# Temporary notes and copied scratch files
+save*
+test.txt
+workflow.txt
+record.txt
+zongshu.txt
+cmakecopy
+*_backup.cpp
