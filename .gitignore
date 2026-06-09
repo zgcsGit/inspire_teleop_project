@@ -27,9 +27,16 @@ left_ws/src/analysis/
 left_ws/src/train/
 left_ws/src/multi_modal_data_collection/data/
 left_ws/src/**/touch_logs/
+right_ws/src/multi_modal_data_collection/data/
+right_ws/src/**/touch_logs/
+train/data/
+train/outputs/
+train/checkpoints/
 *.bag
 *.db3
 *.mcap
+*.npz
+*.npy
 *.mp4
 *.avi
 *.mov
