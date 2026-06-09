@@ -1,0 +1,38 @@
+defaults:
+  - train_diffusion_unet_timm_umi_workspace
+  - override task: inspire_bimanual_active
+  - _self_
+
+task_name: ${task.name}
+shape_meta: ${task.shape_meta}
+exp_name: "active_overfit"
+
+policy:
+  shape_meta: ${shape_meta}
+  obs_encoder:
+    shape_meta: ${shape_meta}
+    transforms: null
+
+dataloader:
+  batch_size: 8
+  num_workers: 8
+  shuffle: True
+  pin_memory: True
+  persistent_workers: True
+
+val_dataloader:
+  batch_size: 8
+  num_workers: 8
+  shuffle: False
+  pin_memory: True
+  persistent_workers: True
+
+training:
+  num_epochs: 300
+  gradient_accumulate_every: 1
+  rollout_every: 9999999
+  checkpoint_every: 20
+  sample_every: 20
+
+logging:
+  project: inspire_bimanual_active

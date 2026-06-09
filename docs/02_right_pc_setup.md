@@ -1,135 +1,78 @@
-# Right PC Setup
+# Right Control PC
+
+The right control PC runs the right-side ROS 2 runtime and the data-collection
+pipeline. This page only describes what belongs on the machine and what each
+package does. Build, dependency, recording, viewer, and launch commands are kept
+in `right_ws/README.md`.
 
 ## Workspace
 
-```bash
-cd inspire_teleop_project/right_ws
-```
-
-## Build
+Only the right workspace and shared docs are needed on this computer:
 
 ```bash
-source /opt/ros/humble/setup.bash
-rosdep install --from-paths src --ignore-src -r -y
-colcon build --symlink-install
-source install/setup.bash
+git clone --filter=blob:none --sparse git@github.com:zgcsGit/inspire_teleop_project.git
+cd inspire_teleop_project
+git sparse-checkout set right_ws docs
 ```
 
-If `libfranka` is installed outside rosdep:
+Expected repo-local layout:
 
-```bash
-rosdep install --from-paths src --ignore-src -r -y --skip-keys libfranka
-export LIBFRANKA_BUILD_DIR=/path/to/libfranka/build
-colcon build --symlink-install
+```text
+inspire_teleop_project/
+  right_ws/
+    src/
+      custom_msgs/
+      foot_switch/
+      franka_control/
+      franka_control_trans/
+      inspire_hand_modbus/
+      inspire_interfaces/
+      inspire_launch/
+      multi_modal_data_collection/
+      teleop_manager/
+      teleop_viewer/
+    README.md
+  docs/
 ```
 
-## Runtime Workflow
+Expected external dependencies on the machine:
 
-Use three terminals after building and sourcing `install/setup.bash`.
-
-### Terminal 1: Cameras And Recorder
-
-```bash
-ros2 launch inspire_launch bringup_camera_and_record.launch.py \
-  out_dir:=~/inspire_teleop_data/right \
-  rate_hz:=15.0 \
-  slop_sec:=0.3
+```text
+ROS 2 Humble
+libfranka / Franka ROS 2 support
+RealSense runtime and ROS packages
+Azure Kinect runtime and ROS packages
+Inspire hand Modbus TCP network
+episode output directory outside git
 ```
 
-This starts:
+## Package Roles
 
-- Left wrist RealSense: `/camera_wrist_left/color/image_raw/compressed`
-- Right wrist RealSense: `/camera_wrist_right/color/image_raw/compressed`
-- Azure Kinect RGB: `/ak/rgb/image_raw/compressed`
-- Timestamped recorder: `multi_sensor_data_collection_with_timestamps`
+- `custom_msgs`: shared custom message definitions.
+- `inspire_interfaces`: Inspire hand command and feedback message definitions.
+- `inspire_launch`: right-side bringup, camera, and recording launch files.
+- `teleop_manager`: starts and stops the right bringup launch from a ROS topic.
+- `foot_switch`: optional pedal integration for recording and bringup commands.
+- `franka_control`: right Franka Cartesian impedance control.
+- `franka_control_trans`: converts right-hand marker points into the desired
+  right Franka end-effector pose.
+- `inspire_hand_modbus`: communicates with the right Inspire hand over Modbus
+  TCP.
+- `multi_modal_data_collection`: records timestamped multimodal episodes.
+- `teleop_viewer`: displays camera, tactile, and recorder status.
 
-The recorder exposes:
+## Runtime Flow
 
-- `/start_episode`
-- `/stop_episode`
-- `/episode_recording`
-- `/recorder_status_text`
-- `/recorder_event_text`
+The normal right-side runtime is:
 
-Keep `out_dir` outside this repo. Do not commit `multi_modal_data_collection/data`, `.npz`, bag files, exported images, or experiment CSVs.
+1. Camera and recorder launch starts the wrist RealSense cameras, Azure Kinect,
+   and timestamped recorder.
+2. `teleop_manager` waits for bringup enable/disable commands.
+3. Right bringup starts the right Franka controller, right Inspire hand Modbus
+   node, and handpoint-to-pose conversion.
+4. The viewer subscribes to camera streams, hand feedback, freeze flags, and
+   recorder status.
+5. Episode files are written outside the repository and must not be committed.
 
-### Terminal 2: Bringup Manager
-
-```bash
-ros2 run teleop_manager bringup_manager
-```
-
-The manager listens on:
-
-```bash
-/teleop/bringup_enable
-```
-
-Start the right control chain:
-
-```bash
-ros2 topic pub --once /teleop/bringup_enable std_msgs/msg/Bool "{data: true}"
-```
-
-Stop it:
-
-```bash
-ros2 topic pub --once /teleop/bringup_enable std_msgs/msg/Bool "{data: false}"
-```
-
-The manager starts this launch:
-
-```bash
-ros2 launch inspire_launch bringup_right.launch.py \
-  robot_ip:=12.1.1.6 \
-  modbus_ip:=192.168.11.210 \
-  modbus_port:=6000 \
-  hand_ns:=right
-```
-
-Run it directly only for debugging. Optional topic overrides:
-
-```bash
-ros2 launch inspire_launch bringup_right.launch.py \
-  input_hand_topic:=/Righthandpoint \
-  desired_pose_topic:=/right/desired_pose_matrix \
-  actual_ee_pose_topic:=/frankaRight/ee_pose_matrix
-```
-
-### Terminal 3: Viewer
-
-```bash
-ros2 run teleop_viewer single_image_viewer
-```
-
-The viewer subscribes to the three camera streams, left/right touch data, hand freeze flags, and recorder status topics.
-
-## Main Nodes
-
-- `franka_control/franka_node`: connects to the right Franka, moves to the right home posture, then runs Cartesian impedance control.
-- `franka_control_trans/pose_publisher`: converts `/Righthandpoint` into a desired 4x4 pose matrix.
-- `franka_control_trans/show_desired_matrix`: publishes TF for visualizing the desired pose.
-- `inspire_hand_modbus/inspire_hand_modbus_topic`: reads and commands the Inspire hand over Modbus TCP.
-- `teleop_manager/bringup_manager`: optional start/stop manager for `bringup_right.launch.py`.
-- `foot_switch/footswitch_node`: optional pedal node for start/stop recording services and host bringup.
-- `multi_modal_data_collection/multi_sensor_data_collection_with_timestamps`: records synchronized episode data.
-- `teleop_viewer/single_image_viewer`: shows camera, tactile, and recorder state.
-
-## Topics
-
-- Input: `/Righthandpoint`
-- Cameras: `/ak/rgb/image_raw/compressed`, `/camera_wrist_right/color/image_raw/compressed`, `/camera_wrist_left/color/image_raw/compressed`
-- Desired pose: `/right/desired_pose_matrix`
-- Franka actual pose: `/frankaRight/ee_pose_matrix`
-- Hand feedback: `/right/force_data`, `/right/angle_data`, `/right/touch_data`
-- Hand commands: `/right/set_force_data`, `/right/set_speed_data`, `/right/set_angle_data`
-
-## Hardware Parameters
-
-- `robot_ip`: right Franka IP, default `12.1.1.6`.
-- `modbus_ip`: Inspire hand Modbus IP, default `192.168.11.210`.
-- `modbus_port`: Inspire hand Modbus TCP port, default `6000`.
-- `hand_ns`: hand namespace, default `right`.
-- `out_dir`: recorder output directory, default `~/inspire_teleop_data/right`.
-- `wrist_left_serial`: left wrist RealSense serial, default `'213322073743'`.
-- `wrist_right_serial`: right wrist RealSense serial, default `'828112071102'`.
+See `right_ws/README.md` for the actual installation, build, recording, and
+launch commands.

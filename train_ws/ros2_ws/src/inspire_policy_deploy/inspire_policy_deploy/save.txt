@@ -1,0 +1,441 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import sys
+from collections import deque
+
+import cv2
+import numpy as np
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from sensor_msgs.msg import CompressedImage
+from scipy.spatial.transform import Rotation as R
+
+from custom_msgs.msg import DesiredPose
+from inspire_interfaces.msg import GetAngleAct1, GetTouchAct1, SetAngle1
+
+TRAIN_ROOT = "/workspace/zhicheng_ws/train"
+DEPLOY_SCRIPT_DIR = "/workspace/zhicheng_ws/train/inspire_scripts_deploy"
+sys.path.insert(0, TRAIN_ROOT)
+sys.path.insert(0, DEPLOY_SCRIPT_DIR)
+
+from deploy_core import InspirePolicyDeploy
+from umi.common.pose_util import pose_to_mat
+
+
+class PolicyRosNode(Node):
+    def __init__(self):
+        super().__init__("policy_ros_node")
+
+        self.obs_horizon = 2
+        self.image_size = 224
+        self.max_age = 0.5
+
+        self.timer_period = 0.05
+        self.infer_interval = 0.5   # 2Hz，第一轮实机保守
+        self.print_interval = 2.0
+
+        self.enable_real_publish = True
+
+        self.last_infer_time = 0.0
+        self.last_print_time = 0.0
+
+        self.ckpt_path = (
+            "/workspace/zhicheng_ws/train/data/outputs/2026.04.24/"
+            "12.40.24_train_diffusion_unet_timm_inspire_bimanual/"
+            "checkpoints/epoch=0020-train_loss=0.018.ckpt"
+        )
+
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+
+        state_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+
+        self.buffers = {}
+        self.obs_history = deque(maxlen=self.obs_horizon)
+
+        for key in [
+            "camera0_rgb",
+            "camera1_rgb",
+            "camera2_rgb",
+            "robot0_pose",
+            "robot1_pose",
+            "robot0_hand_angles",
+            "robot1_hand_angles",
+            "robot0_touch",
+            "robot1_touch",
+        ]:
+            self.buffers[key] = deque(maxlen=100)
+
+        self.get_logger().info("Loading InspirePolicyDeploy...")
+        self.deploy = InspirePolicyDeploy(self.ckpt_path, device="cuda")
+        self.get_logger().info("InspirePolicyDeploy loaded.")
+
+        self.create_subscription(
+            CompressedImage,
+            "/camera_wrist_left/color/image_raw/compressed",
+            lambda msg: self.image_cb(msg, "camera0_rgb"),
+            sensor_qos,
+        )
+        self.create_subscription(
+            CompressedImage,
+            "/camera_wrist_right/color/image_raw/compressed",
+            lambda msg: self.image_cb(msg, "camera1_rgb"),
+            sensor_qos,
+        )
+        self.create_subscription(
+            CompressedImage,
+            "/ak/rgb/image_raw/compressed",
+            lambda msg: self.image_cb(msg, "camera2_rgb"),
+            sensor_qos,
+        )
+
+        self.create_subscription(
+            DesiredPose,
+            "/frankaLeft/ee_pose_matrix",
+            lambda msg: self.pose_cb(msg, "robot0_pose"),
+            state_qos,
+        )
+        self.create_subscription(
+            DesiredPose,
+            "/frankaRight/ee_pose_matrix",
+            lambda msg: self.pose_cb(msg, "robot1_pose"),
+            state_qos,
+        )
+
+        self.create_subscription(
+            GetAngleAct1,
+            "/left/angle_data",
+            lambda msg: self.angle_cb(msg, "robot0_hand_angles"),
+            state_qos,
+        )
+        self.create_subscription(
+            GetAngleAct1,
+            "/right/angle_data",
+            lambda msg: self.angle_cb(msg, "robot1_hand_angles"),
+            state_qos,
+        )
+
+        self.create_subscription(
+            GetTouchAct1,
+            "/left/touch_data",
+            lambda msg: self.touch_cb(msg, "robot0_touch"),
+            state_qos,
+        )
+        self.create_subscription(
+            GetTouchAct1,
+            "/right/touch_data",
+            lambda msg: self.touch_cb(msg, "robot1_touch"),
+            state_qos,
+        )
+
+        # # Debug converted publishers
+        # self.pub_robot0_pose_cmd_debug = self.create_publisher(
+        #     DesiredPose, "/policy_debug/robot0_desired_pose_matrix", 10
+        # )
+        # self.pub_robot1_pose_cmd_debug = self.create_publisher(
+        #     DesiredPose, "/policy_debug/robot1_desired_pose_matrix", 10
+        # )
+        # self.pub_robot0_hand_cmd_debug = self.create_publisher(
+        #     SetAngle1, "/policy_debug/robot0_set_angle_data", 10
+        # )
+        # self.pub_robot1_hand_cmd_debug = self.create_publisher(
+        #     SetAngle1, "/policy_debug/robot1_set_angle_data", 10
+        # )
+
+        # Real control publishers
+        self.pub_left_pose_cmd = self.create_publisher(
+            DesiredPose, "/left/desired_pose_matrix", 10
+        )
+        self.pub_right_pose_cmd = self.create_publisher(
+            DesiredPose, "/right/desired_pose_matrix", 10
+        )
+        self.pub_left_hand_cmd = self.create_publisher(
+            SetAngle1, "/left/set_angle_data", 10
+        )
+        self.pub_right_hand_cmd = self.create_publisher(
+            SetAngle1, "/right/set_angle_data", 10
+        )
+
+        self.timer = self.create_timer(self.timer_period, self.timer_cb)
+
+        self.get_logger().info("PolicyRosNode started.")
+        self.get_logger().info(
+            f"Real publish: {self.enable_real_publish}, inference interval: {self.infer_interval}s"
+        )
+
+    def now_sec(self):
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def push_buffer(self, key, data):
+        self.buffers[key].append((self.now_sec(), data))
+
+    def get_latest(self, key):
+        if len(self.buffers[key]) == 0:
+            return None, None
+        t, data = self.buffers[key][-1]
+        age = self.now_sec() - t
+        if age > self.max_age:
+            return None, age
+        return data, age
+
+    def image_cb(self, msg: CompressedImage, key: str):
+        try:
+            arr = np.frombuffer(msg.data, dtype=np.uint8)
+            bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if bgr is None:
+                return
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            rgb = cv2.resize(
+                rgb,
+                (self.image_size, self.image_size),
+                interpolation=cv2.INTER_AREA,
+            )
+            self.push_buffer(key, rgb.astype(np.uint8))
+        except Exception as e:
+            self.get_logger().warn(f"{key} image_cb error: {e}")
+
+    def pose_cb(self, msg: DesiredPose, key: str):
+        try:
+            mat = np.asarray(msg.pose_matrix, dtype=np.float64).reshape(4, 4).T
+            pos = mat[:3, 3].astype(np.float32)
+            rotvec = R.from_matrix(mat[:3, :3]).as_rotvec().astype(np.float32)
+            self.push_buffer(
+                key,
+                {"pos": pos, "rotvec": rotvec, "mat": mat.astype(np.float32)},
+            )
+        except Exception as e:
+            self.get_logger().warn(f"{key} pose_cb error: {e}")
+
+    def angle_cb(self, msg: GetAngleAct1, key: str):
+        try:
+            angles = np.asarray(msg.angles, dtype=np.float32).reshape(-1)
+            if angles.shape[0] != 6:
+                return
+            self.push_buffer(key, angles)
+        except Exception as e:
+            self.get_logger().warn(f"{key} angle_cb error: {e}")
+
+    def touch_cb(self, msg: GetTouchAct1, key: str):
+        try:
+            touch = np.asarray(msg.touch_values, dtype=np.float32).reshape(-1)
+            if touch.shape[0] != 533:
+                return
+            self.push_buffer(key, touch)
+        except Exception as e:
+            self.get_logger().warn(f"{key} touch_cb error: {e}")
+
+    def build_snapshot(self):
+        required = [
+            "camera0_rgb",
+            "camera1_rgb",
+            "camera2_rgb",
+            "robot0_pose",
+            "robot1_pose",
+            "robot0_hand_angles",
+            "robot1_hand_angles",
+            "robot0_touch",
+            "robot1_touch",
+        ]
+
+        latest = {}
+        stale_info = []
+
+        for key in required:
+            data, age = self.get_latest(key)
+            if data is None:
+                stale_info.append((key, age))
+            else:
+                latest[key] = data
+
+        if stale_info:
+            return None, stale_info
+
+        snapshot = {
+            "camera0_rgb": latest["camera0_rgb"],
+            "camera1_rgb": latest["camera1_rgb"],
+            "camera2_rgb": latest["camera2_rgb"],
+
+            "robot0_eef_pos": latest["robot0_pose"]["pos"],
+            "robot0_eef_rot_axis_angle": latest["robot0_pose"]["rotvec"],
+            "robot0_hand_angles": latest["robot0_hand_angles"],
+            "robot0_touch": latest["robot0_touch"],
+
+            "robot1_eef_pos": latest["robot1_pose"]["pos"],
+            "robot1_eef_rot_axis_angle": latest["robot1_pose"]["rotvec"],
+            "robot1_hand_angles": latest["robot1_hand_angles"],
+            "robot1_touch": latest["robot1_touch"],
+        }
+
+        return snapshot, None
+
+    def stack_obs_world(self):
+        obs_world = {}
+        for key in self.obs_history[0].keys():
+            obs_world[key] = np.stack(
+                [snap[key] for snap in self.obs_history],
+                axis=0,
+            )
+        return obs_world
+
+    def pose6_to_desired_pose_msg(self, pose6):
+        pose6 = np.asarray(pose6, dtype=np.float32).reshape(6)
+        mat = pose_to_mat(pose6[None, :])[0]
+
+        msg = DesiredPose()
+        msg.pose_matrix = mat.T.reshape(-1).astype(np.float64).tolist()
+        return msg
+
+    def hand6_to_set_angle_msg(self, hand6):
+        hand6 = np.asarray(hand6, dtype=np.float32).reshape(6)
+        hand6 = np.clip(np.round(hand6), 0, 1000).astype(np.int32)
+
+        msg = SetAngle1()
+        msg.finger_ids = [1, 2, 3, 4, 5, 6]
+        msg.angles = hand6.tolist()
+        return msg
+    def save_obs_images_once(self, obs_world):
+        out_dir = "/workspace/zhicheng_ws/debug_deploy_images"
+        os.makedirs(out_dir, exist_ok=True)
+
+        for cam in ["camera0_rgb", "camera1_rgb", "camera2_rgb"]:
+            img = obs_world[cam][-1]  # 最新一帧, RGB uint8
+            bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(os.path.join(out_dir, f"{cam}.png"), bgr)
+
+        self.get_logger().info(f"Saved deploy images to {out_dir}")
+
+    # def publish_converted_debug_action(self, action_world):
+    #     robot0_pose0 = action_world["robot0_target_pose"][0]
+    #     robot1_pose0 = action_world["robot1_target_pose"][0]
+    #     robot0_hand0 = action_world["robot0_hand_angles"][0]
+    #     robot1_hand0 = action_world["robot1_hand_angles"][0]
+
+    #     self.pub_robot0_pose_cmd_debug.publish(
+    #         self.pose6_to_desired_pose_msg(robot0_pose0)
+    #     )
+    #     self.pub_robot1_pose_cmd_debug.publish(
+    #         self.pose6_to_desired_pose_msg(robot1_pose0)
+    #     )
+    #     self.pub_robot0_hand_cmd_debug.publish(
+    #         self.hand6_to_set_angle_msg(robot0_hand0)
+    #     )
+    #     self.pub_robot1_hand_cmd_debug.publish(
+    #         self.hand6_to_set_angle_msg(robot1_hand0)
+    #     )
+
+    def publish_real_action(self, action_world):
+        if not self.enable_real_publish:
+            return
+
+        robot0_pose0 = action_world["robot0_target_pose"][0]
+        robot1_pose0 = action_world["robot1_target_pose"][0]
+        robot0_hand0 = action_world["robot0_hand_angles"][0]
+        robot1_hand0 = action_world["robot1_hand_angles"][0]
+
+        self.pub_left_pose_cmd.publish(
+            self.pose6_to_desired_pose_msg(robot0_pose0)
+        )
+        self.pub_right_pose_cmd.publish(
+            self.pose6_to_desired_pose_msg(robot1_pose0)
+        )
+        self.pub_left_hand_cmd.publish(
+            self.hand6_to_set_angle_msg(robot0_hand0)
+        )
+        self.pub_right_hand_cmd.publish(
+            self.hand6_to_set_angle_msg(robot1_hand0)
+        )
+
+    def print_obs_debug(self, obs_world):
+        self.get_logger().info(
+            f"robot0 pos latest: {obs_world['robot0_eef_pos'][-1]}"
+        )
+        self.get_logger().info(
+            f"robot1 pos latest: {obs_world['robot1_eef_pos'][-1]}"
+        )
+
+    def print_action_debug(self, action_world):
+        self.get_logger().info(
+            f"robot0 target pose[0]: {action_world['robot0_target_pose'][0]}"
+        )
+        self.get_logger().info(
+            f"robot1 target pose[0]: {action_world['robot1_target_pose'][0]}"
+        )
+        self.get_logger().info(
+            f"robot0 hand[0]: {action_world['robot0_hand_angles'][0]}"  
+        )
+        self.get_logger().info(
+            f"robot1 hand[0]: {action_world['robot1_hand_angles'][0]}"
+        )
+
+    def timer_cb(self):
+        now = self.now_sec()
+
+        snapshot, stale_info = self.build_snapshot()
+
+        if snapshot is None:
+            if now - self.last_print_time > self.print_interval:
+                msg = ", ".join(
+                    [
+                        f"{key}: empty" if age is None else f"{key}: age={age:.3f}s"
+                        for key, age in stale_info
+                    ]
+                )
+                self.get_logger().warn(f"Waiting for fresh topics: {msg}")
+                self.last_print_time = now
+            return
+
+        self.obs_history.append(snapshot)
+
+        if len(self.obs_history) < self.obs_horizon:
+            return
+
+        obs_world = self.stack_obs_world()
+
+        action_world = None
+
+        if now - self.last_infer_time > self.infer_interval:
+            try:
+                action_world = self.deploy.predict(obs_world)
+
+                # self.publish_converted_debug_action(action_world)
+                # self.publish_real_action(action_world)
+
+                self.last_infer_time = now
+
+            except Exception as e:
+                self.get_logger().error(f"Policy inference failed: {e}")
+                return
+
+        if now - self.last_print_time > self.print_interval:
+            self.print_obs_debug(obs_world)
+            if action_world is not None:
+                self.print_action_debug(action_world)
+            self.last_print_time = now
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = PolicyRosNode()
+
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

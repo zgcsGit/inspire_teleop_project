@@ -1,0 +1,260 @@
+1. Data Converter(npz → dataset.zarr.zip)
+        （先将episode 分组然后拼接并保存成zarr.zip） 对我们有 2*（末端位姿 4×4，手腕相机，Inspire 控制值 6×1）+3人称相机。 需要考虑怎么打包成zarr
+        You should first put all of the npz files into `/universal_manipulation_interface/hand_umi_dataset`
+        Then run the following code to
+
+            python scripts_hand_umi/generate_replay_buffer_hand.py   hand_umi_dataset/episode_*.npz   -o hand_umi_dataset/dataset.zarr.zip   -or 224,224   -cl 99   -n 16
+
+
+        输入输出
+            input: 一堆 episode_*.npz 的路径（可以多个）
+            output: 目标 dataset.zarr.zip
+            out_res: 字符串 "224,224" → (224,224)
+            compression_level: JPEG-XL 压缩等级
+            num_workers: 并行写图的线程数
+
+        把多个对齐好的原始演示 npz 文件，转换成一个统一格式的 Zarr ReplayBuffer。 并将多个episode 拼接到一起。
+
+        # ==========================================
+        # 1️⃣ Create ReplayBuffer in memory   创建内存buffer
+        # ==========================================
+            replay_buffer = ReplayBuffer.create_empty_zarr(
+                storage=zarr.MemoryStore()
+            )
+        这一刻你手里有 3 类原始数据：
+            末端/手腕 tracker 的 6DoF 轨迹（pos+quat）
+            manus 手节点（25 点，每点 7 维，但你只用 xyz）
+            图像（每帧压缩成 jpeg bytes）
+
+
+第二块：Dataset & Sampler（zarr → 训练样本 batch）
+
+    这一块是“你同学改单手单臂”的核心：action 7/81 → 10/84、rotvec→rot6d、relative/delta 表示。
+    这一块你要搞清楚
+    SequenceSampler 采样出来的 data 里面，obs/action 的 raw 形状是什么
+    UmiDataset.__getitem__ 最终输出的：
+    batch['obs'][key] 的 shape
+    batch['action'] 的 shape（应该是 (action_horizon, 84) 单臂）
+    action 的语义到底是什么：预测未来的 “pose相对量 + hand_nodes绝对值/增量”
+
+第三块：Training Workspace & Policy（batch → loss → ckpt）
+
+    这一块通常不需要大改，除非有写死 10D 的地方（你已经在 log_action_mse 修过一次）。
+    这一块你要搞清楚
+    policy 是怎么从 shape_meta 推断 action_dim / obs keys 的
+    workspace 里有没有任何地方写死 action_dim=10（除了日志，还有 env_runner / rollout / 保存可视化）
+    训练时 normalizer 是怎么计算、存、加载、应用的（确保 hand_nodes 进入 normalizer）
+
+
+
+
+train.py  接受参数 config 文件。并动态实例化 workspace基类
+yaml 文件中 定义 
+    A. Workspace（训练编排器） 
+        _target_: diffusion_policy.workspace.train_diffusion_unet_image_workspace.TrainDiffusionUnetImageWorkspace
+        所以真正训练入口是：
+
+diffusion_policy/workspace/train_diffusion_unet_image_workspace.py
+
+        类：TrainDiffusionUnetImageWorkspace
+        看它的 __init__() 和 run() 就能看到：dataset/dataloader/normalizer/model/optimizer/loop/ckpt。
+
+        2.1 初始化 accelerate + wandb
+            accelerator = Accelerator(log_with='wandb')
+            accelerator.init_trackers(...)
+
+            注意：你 yaml 里 logging.mode: online，所以没登录 wandb 会出问题；离线就改成 offline。
+
+        2.3 instantiate dataset（这里开始真正读你生成的 zarr）
+            dataset = hydra.utils.instantiate(cfg.task.dataset)
+            train_dataloader = DataLoader(dataset, **cfg.dataloader)
+
+            这里的 cfg.task.dataset 来自 task/hand_umi.yaml，通常类似：
+            _target_: diffusion_policy.dataset.umi_dataset.UmiDataset
+            dataset_path: hand_umi_dataset/dataset.zarr.zip
+            shape_meta: ...
+            ✅ 结论：zarr 的读取、样本切片、rot6d/relative 等所有“数据处理”，都不在 workspace，而在 dataset 类里。
+                                    
+        2.4 计算 normalizer（这一步很关键）
+            if accelerator.is_main_process:
+                normalizer = dataset.get_normalizer()
+                pickle.dump(normalizer, open(normalizer_path,'wb'))
+            accelerator.wait_for_everyone()
+            normalizer = pickle.load(...)
+
+            含义：
+
+            只在主进程扫描一遍 dataset，统计 obs/action 分布
+
+            保存到 output_dir/normalizer.pkl
+
+            所有进程加载同一份 normalizer
+
+            ✅ 你以后改 obs/action 维度（比如改成“手指角度”），dataset.get_normalizer() 一定要同步支持，否则会报 unsupported 或 shape mismatch。              
+                                    
+        2.8 env_runner（rollout）
+            env_runner = hydra.utils.instantiate(cfg.task.env_runner, output_dir=...)
+
+            ⚠️ 你 hand_umi 如果没有对应环境，这里可能：
+
+            直接跑不通（action_dim 不匹配）
+
+            或者 runner 逻辑无意义
+
+            实操建议：如果你现在只是离线 BC 训练、没有 rollout 环境：
+
+            把 rollout_every 设很大（比如 999999）
+
+            或者在 task/hand_umi.yaml 里用一个 dummy runner（如果 repo 有）
+
+                        #########################
+                        #########################
+    B. Task（数据合同）
+    defaults:
+    - task: hand_umi
+
+    task_name: ${task.name}
+    shape_meta: ${task.shape_meta}
+
+        这说明 obs/action 的 key、维度、horizon、dataset class、dataset_path 全在：
+
+diffusion_policy/config/task/hand_umi.yaml
+
+        这份是“数据合同”（shape_meta），也是你把 zarr.zip 接入训练的地方。
+
+                        #######################
+                        #######################
+    C. Policy（模型本体）
+    policy:
+    _target_: diffusion_policy.policy.diffusion_unet_timm_policy.DiffusionUnetTimmPolicy
+    shape_meta: ${shape_meta}
+
+    说明模型由：
+
+diffusion_policy/policy/diffusion_unet_timm_policy.py
+
+    类 DiffusionUnetTimmPolicy
+    它会用 shape_meta 决定：
+    哪些 obs key 用图像 encoder、哪些用 lowdim
+    action_dim（你 hand_umi 是 84/robot）
+    diffusion UNet 的输入输出维度
+
+
+原始 episode_*.npz
+→ generate_replay_buffer_hand.py
+    → dataset.zarr.zip
+→ train.py 
+    → 主 yaml: train_diffusion_unet_timm_hand_umi_workspace.yaml（在调用train的时候作为参数给入。规定使用的workspace,task,policy以及参数）
+        → task yaml: hand_umi.yaml （在workspace中组织，在umi_dataset中调用，用以构建适合policy的训练集）
+→ workspace: TrainDiffusionUnetImageWorkspace
+→ dataset: UmiDataset
+→ sampler: SequenceSampler
+→ policy: DiffusionUnetTimmPolicy
+→ 训练循环
+
+暂时不考虑 transformer
+
+umi_bimanual.yaml 与 hand_umi.yaml相对
+train_diffusion_unet_umi_bimanual_workspace与train_diffusion_unet_timm_hand_umi_workspace 相对 
+
+
+
+可能可以将action 更改为 delta action. 用action增量。（后续再说）
+
+单臂单手：
+0. 开conda虚拟环境
+~/anaconda3/bin/conda init bash
+source ~/.bashrc
+
+1. run generate_replay_buffer_inspire_left_hand
+python scripts_hand_umi/generate_replay_buffer_inspire_left_hand.py hand_inspire_dataset/episode_*.npz -o hand_inspire_dataset/dataset.zarr.zip -or 224,224 -cl 99 -n 16
+
+2. run train.py
+python train.py --config-name=train_diffusion_unet_timm_hand_umi_workspace task.dataset_path=hand_inspire_dataset/dataset.zarr.zip
+
+python scripts_hand_umi/generate_replay_buffer_inspire_bimanual_hand.py hand_inspire_dataset/episode_*.npz -o hand_inspire_dataset/dataset.zarr.zip -or 224,224 -cl 99 -n 16
+
+
+inspire 双手双臂流程
+0. 开conda环境
+
+1. npz生成zarr。
+齐次变换矩阵
+    → 提取平移部分 xyz
+    → 提取旋转矩阵 R
+    → scipy Rotation.as_rotvec()
+    → 得到 axis-angle / rotation vector
+    actual_ee_pose_left:  (T, 4, 4) float32
+        → 拆成
+    robot0_eef_pos:       (T, 3) float32
+    robot0_eef_rot_axis_angle: (T, 3) float32
+
+    actual_ee_pose_right: (T, 4, 4) float32
+        → 拆成
+    robot1_eef_pos:       (T, 3) float32
+    robot1_eef_rot_axis_angle: (T, 3) float32
+
+object dict
+    → 取出 frame["angles"]
+    → 检查 shape == (6,)
+    → stack 成二维数组
+    angle_left: object array, length T
+        每帧 dict: {"angles": shape (6,)}
+        → robot0_hand_angles: (T, 6) int32
+
+    angle_right: object array, length T
+        每帧 dict: {"angles": shape (6,)}
+        → robot1_hand_angles: (T, 6) int32
+
+compressed image bytes
+    → cv2.imdecode()
+    → BGR 转 RGB
+    → resize 到 224x224
+    → 用 JPEG-XL compressor 写入 zarr
+    rgb3: object array, length T
+        每帧 dict: {"format": ..., "data": compressed bytes}
+        → camera0_rgb: (N, 224, 224, 3) uint8
+
+    rgb2: object array, length T
+        → camera1_rgb: (N, 224, 224, 3) uint8
+
+    kinect_rgb: object array, length T
+        → camera2_rgb: (N, 224, 224, 3) uint8
+
+pose6[0] / pose6[-1]
+    → repeat T 次
+    每个 episode 的第一帧 pose
+        → robot0_demo_start_pose: (T, 6) float32
+        → robot1_demo_start_pose: (T, 6) float32
+
+    每个 episode 的最后一帧 pose
+        → robot0_demo_end_pose: (T, 6) float32
+        → robot1_demo_end_pose: (T, 6) float32
+
+2. train 入口
+ train_diffusion_unet_timm_umi_workspace.yaml
+ python train.py --config-name=train_diffusion_unet_timm_umi_workspace task.dataset_path=hand_inspire_dataset/dataset.zarr.zip
+
+
+python scripts_hand_umi/generate_replay_buffer_inspire_bimanual_hand.py \
+/mnt/data/zhicheng_ws/dataset/test_80/episode_*.npz \
+-o hand_inspire_dataset/dataset.zarr.zip \
+-or 224,224 \
+-cl 99 \
+-n 16
+
+python scripts_hand_umi/generate_replay_buffer_inspire_bimanual_hand.py hand_inspire_dataset/episode_*.npz -o hand_inspire_dataset/dataset.zarr.zip -or 224,224 -cl 99 -n 16
+
+python train.py \
+--config-name=train_diffusion_unet_timm_umi_workspace \
+task.dataset_path=hand_inspire_dataset/dataset.zarr.zip \
+dataloader.batch_size=16 \
+val_dataloader.batch_size=16 \
+training.gradient_accumulate_every=4 \
+training.num_epochs=50 \
+training.debug=False \
+logging.mode=online
+
+
+wandb: ⭐️ View project at https://wandb.ai/gg0701lqly-technical-university-of-munich/inspire_bimanual
+wandb: 🚀 View run at https://wandb.ai/gg0701lqly-technical-university-of-munich/inspire_bimanual/runs/q6p0mhm4

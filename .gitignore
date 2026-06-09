@@ -29,9 +29,24 @@ left_ws/src/multi_modal_data_collection/data/
 left_ws/src/**/touch_logs/
 right_ws/src/multi_modal_data_collection/data/
 right_ws/src/**/touch_logs/
-train/data/
-train/outputs/
-train/checkpoints/
+train_ws/train/data/*
+!train_ws/train/data/README.md
+!train_ws/train/data/outputs/
+train_ws/train/data/outputs/*
+!train_ws/train/data/outputs/README.md
+train_ws/train/wandb/*
+!train_ws/train/wandb/README.md
+train_ws/train/hand_inspire_dataset/*
+!train_ws/train/hand_inspire_dataset/README.md
+train_ws/train/hand_umi_dataset/*
+!train_ws/train/hand_umi_dataset/README.md
+train_ws/train/hand_inspire_dataset_active_overfit/
+train_ws/train/hand_inspire_dataset_active_test2/
+train_ws/debug_deploy_actions/
+train_ws/debug_deploy_obs/
+train_ws/debug_active_zarr_check/
+train_ws/ros2_ws/src/realsense-ros/
+train_ws/ros2_ws/src/Azure_Kinect_ROS_Driver/
 *.bag
 *.db3
 *.mcap
@@ -40,8 +55,12 @@ train/checkpoints/
 *.mp4
 *.avi
 *.mov
+*.zarr
+*.zarr.zip
+*.ckpt
 *.pt
 *.pth
+*.pkl
 
 # Local environment files
 .env

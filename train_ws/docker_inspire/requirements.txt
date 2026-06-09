@@ -1,0 +1,12 @@
+# diffusion / model
+accelerate==0.24
+diffusers==0.18.2
+timm==0.9.7
+
+# 数据 / 编码
+imagecodecs==2023.9.18
+
+# 工具
+wandb==0.15.8
+threadpoolctl==3.2
+PyExifTool==0.5

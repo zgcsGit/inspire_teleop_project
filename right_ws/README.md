@@ -15,6 +15,29 @@ This workspace contains the self-maintained ROS 2 packages required by the right
 - `teleop_viewer`: image/touch/recording-status viewer.
 - `foot_switch`: optional foot pedal node for recording services and host bringup.
 
+## Camera Driver Dependencies
+
+Install camera SDK dependencies only when needed for deployment.
+
+Azure Kinect:
+
+- SDK repo: `https://github.com/microsoft/Azure-Kinect-Sensor-SDK`
+- Debian packages used here: `libk4a1.4`, `libk4a1.4-dev`
+
+RealSense:
+
+- ROS2 repo: `https://github.com/realsenseai/realsense-ros/tree/ros2-legacy`
+- System packages used here: `librealsense2`, `librealsense2-dev`, `librealsense2-utils`
+- ROS dependency: `ros-humble-diagnostic-updater`
+
+After plugging in cameras:
+
+```bash
+lsusb
+```
+
+should show the two RealSense cameras and the Azure Kinect.
+
 ## Build
 
 ```bash

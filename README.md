@@ -1,61 +1,60 @@
 # Inspire Teleoperation Project
 
-This repository contains the runtime workspaces and documentation for the
+This repository contains the cleaned workspaces and documentation for the
 Franka Panda + Inspire dexterous-hand teleoperation system.
 
-Current uploaded content includes the cleaned left-control workspace and the
-right-control workspace organized from the right PC.
-
-## Layout
+The repository is split by computer role:
 
 ```text
 inspire_teleop_project/
-  left_ws/
-    src/
-  right_ws/
-    src/
-  train/
-  docs/
+  left_ws/     # left control PC ROS 2 workspace
+  right_ws/    # right control PC ROS 2 workspace and data collection
+  train_ws/    # train/deploy computer: Docker, deploy ROS 2, training code
+  docs/        # high-level structure and dependency maps
 ```
+
+Third-party packages, datasets, checkpoints, logs, videos, bags, and generated
+outputs are not vendored into this repository.
 
 ## Documentation
 
 - [Project overview](docs/00_overview.md)
-- [Left control PC setup](docs/01_left_pc_setup.md)
-- [Right control PC setup](docs/02_right_pc_setup.md)
-- [Train PC setup](docs/03_train_pc_setup.md)
-- [Environment and dependencies](docs/04_environment.md)
+- [Left control PC](docs/01_left_pc_setup.md)
+- [Right control PC](docs/02_right_pc_setup.md)
+- [Train PC](docs/03_train_pc_setup.md)
+- [External dependency map](docs/04_environment.md)
 
-## Right PC Quick Start
+Concrete install, build, and startup commands live in the corresponding
+workspace README:
 
-```bash
-cd inspire_teleop_project/right_ws
-colcon build --symlink-install
-source install/setup.bash
-ros2 launch inspire_launch bringup_camera_and_record.launch.py
-```
+- `left_ws/README.md`
+- `right_ws/README.md`
+- `train_ws/docker_inspire/README.md`
+- `train_ws/ros2_ws/README.md`
+- `train_ws/train/README.md`
 
-The right PC normally uses three terminals: camera/record launch, bringup
-manager, and viewer. See `docs/02_right_pc_setup.md` for the full workflow.
+## Clone Only One Workspace
 
-## Sparse Checkout
-
-To download only the left-control workspace and documentation:
+Left control PC:
 
 ```bash
-git clone --filter=blob:none --sparse <repo_url>
+git clone --filter=blob:none --sparse git@github.com:zgcsGit/inspire_teleop_project.git
 cd inspire_teleop_project
 git sparse-checkout set left_ws docs
 ```
 
-For the right-control PC:
+Right control PC:
 
 ```bash
+git clone --filter=blob:none --sparse git@github.com:zgcsGit/inspire_teleop_project.git
+cd inspire_teleop_project
 git sparse-checkout set right_ws docs
 ```
 
-For the training PC:
+Train PC:
 
 ```bash
-git sparse-checkout set train docs
+git clone --filter=blob:none --sparse git@github.com:zgcsGit/inspire_teleop_project.git
+cd inspire_teleop_project
+git sparse-checkout set train_ws docs
 ```

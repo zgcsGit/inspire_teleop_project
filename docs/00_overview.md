@@ -1,50 +1,53 @@
 # Inspire Teleoperation Project Overview
 
-This project contains the code and operating notes for the dual-arm Franka Panda
-and Inspire dexterous-hand teleoperation system.
+This repository is the integration repo for the dual-arm Franka Panda and
+Inspire dexterous-hand teleoperation system.
+
+The three computers have different jobs. The left and right control computers
+run ROS 2 control/data-collection workspaces. The train computer keeps the
+Docker environment, deploy ROS 2 workspace, and policy training code together
+under `train_ws/`.
 
 ## Repository Layout
 
-The planned monorepo layout is:
+After third-party packages are installed on the target machines, the repository
+is expected to look like this:
 
 ```text
 inspire_teleop_project/
   left_ws/
     src/
       custom_msgs/
-      inspire_interfaces/
-      inspire_launch/
-      teleop_manager/
-      foot_switch/
       finger_map/
+      foot_switch/
       franka_control/
       franka_control_trans/
-      inspire_hand_modbus/
-      inspire_retargeting/
-      vicon_udp_receiver/
       inspire_description/
-      ...
+      inspire_hand_modbus/
+      inspire_interfaces/
+      inspire_launch/
+      inspire_retargeting/
+      teleop_manager/
+      vicon_udp_receiver/
     README.md
 
   right_ws/
     src/
       custom_msgs/
-      inspire_interfaces/
-      inspire_launch/
-      teleop_manager/
-      foot_switch/
       franka_control/
       franka_control_trans/
       inspire_hand_modbus/
+      inspire_interfaces/
+      inspire_launch/
       multi_modal_data_collection/
+      teleop_manager/
       teleop_viewer/
     README.md
 
-  train/
-    README.md
-    scripts/
-    configs/
-    src/
+  train_ws/
+    docker_inspire/
+    ros2_ws/
+    train/
 
   docs/
     00_overview.md
@@ -52,40 +55,51 @@ inspire_teleop_project/
     02_right_pc_setup.md
     03_train_pc_setup.md
     04_environment.md
-
-  .gitignore
-  README.md
 ```
+
+External libraries such as ROS 2 Humble, libfranka, dex-retargeting, RealSense,
+Azure Kinect, CUDA, Conda, and Docker are installed on the machines themselves.
+They are documented as dependencies, but they are not vendored into this repo.
 
 ## Computer Roles
 
-- Left control PC: runs the left Franka controller, left Inspire Modbus node,
-  hand retargeting, finger mapping, Vicon UDP receiver, bringup manager, and
-  foot switch node.
-- Right control PC: runs the right Franka controller, right Inspire Modbus node,
-  hand-to-pose conversion, camera/episode recording, bringup manager, foot
-  switch integration, and viewer.
-- Train PC: stores training code, scripts, configs, and datasets that should not
-  be mixed into the runtime workspaces.
+- Left control PC: left Franka control, left Inspire hand Modbus control, Vicon
+  UDP handpoint input, retargeting, finger mapping, foot switch, and bringup
+  manager.
+- Right control PC: right Franka control, right Inspire hand Modbus control,
+  camera capture, episode recording, viewer, foot switch integration, and
+  bringup manager.
+- Train PC: replay-buffer generation, policy training, policy checkpoint
+  loading, deploy Docker image/container, deploy ROS 2 node, and camera runtime
+  support inside the container.
 
-## Current Status
+## Clone Only One Workspace
 
-The left-control workspace has been cleaned for upload and documented. The
-right-control workspace has also been added from the right PC整理 result.
-Runtime parameters that previously required source-code edits can now be passed
-through launch arguments.
+Each machine can clone only the part it needs with git sparse checkout.
 
-Right PC startup flow:
+Left control PC:
 
-1. Terminal 1 runs `inspire_launch/bringup_camera_and_record.launch.py`.
-2. That launch starts two RealSense cameras, Azure Kinect, and the timestamped
-   recorder.
-3. Terminal 2 runs `teleop_manager/bringup_manager`, which starts/stops
-   `bringup_right.launch.py` from `/teleop/bringup_enable`.
-4. `bringup_right.launch.py` starts the right Franka, right hand Modbus node,
-   and hand-to-pose conversion.
-5. Terminal 3 runs `teleop_viewer/single_image_viewer` to display cameras,
-   touch data, and recording status.
+```bash
+git clone --filter=blob:none --sparse git@github.com:zgcsGit/inspire_teleop_project.git
+cd inspire_teleop_project
+git sparse-checkout set left_ws docs
+```
 
-See `04_environment.md` for system, Python, hardware, and third-party
-dependency notes.
+Right control PC:
+
+```bash
+git clone --filter=blob:none --sparse git@github.com:zgcsGit/inspire_teleop_project.git
+cd inspire_teleop_project
+git sparse-checkout set right_ws docs
+```
+
+Train PC:
+
+```bash
+git clone --filter=blob:none --sparse git@github.com:zgcsGit/inspire_teleop_project.git
+cd inspire_teleop_project
+git sparse-checkout set train_ws docs
+```
+
+The concrete build, environment, and launch commands live in the README of each
+workspace, for example `left_ws/README.md`.

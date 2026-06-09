@@ -1,0 +1,36 @@
+name: umi_deploy
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+
+  # PyTorch / CUDA（必须放这里）
+  - pytorch=2.1.0
+  - torchvision=0.16.0
+  - pytorch-cuda=12.1
+
+  # 基础库（稳定 + 编译相关）
+  - numpy=1.24
+  - scipy=1.11
+  - pandas=2.1
+  - matplotlib=3.7
+  - pyyaml=6.0
+  - tqdm=4.65
+
+  # 核心依赖（建议保留在conda，避免pip编译）
+  - hydra-core=1.2.0
+  - dill=0.3.7
+  - einops=0.6.1
+
+  # 视觉 / IO（conda更稳）
+  - py-opencv=4.7
+  - av=10.0
+  - zarr=2.16
+  - numcodecs=0.11
+
+  # 其他
+  - cython=0.29
+  - ipykernel=6.23

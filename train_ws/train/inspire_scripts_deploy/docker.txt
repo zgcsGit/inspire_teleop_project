@@ -1,0 +1,32 @@
+Ubuntu 24.04 host
+├── Docker (Ubuntu 22.04 + ROS2 Humble)
+│   ├── 相机 ROS driver
+│   ├── 机械臂 ROS topics
+│   ├── deploy node
+│   └── 调用 checkpoint policy
+└── RTX3090 GPU 提供容器推理
+
+1. 安装cuda toolkit， docker内使用gpu
+    然后安装 toolkit：
+        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+        sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+        curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+        sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+        sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+        sudo apt install -y nvidia-container-toolkit
+
+    配置 Docker：
+        sudo nvidia-ctk runtime configure --runtime=docker
+        sudo systemctl restart docker
+
+    验证：
+        docker info | grep -A5 Runtimes
+        docker run --rm --gpus all nvidia/cuda:12.1.1-base-ubuntu22.04 nvidia-smi
+
+2.  开docker镜像.    Ubuntu 22.04
+                    ROS2 Humble
+                    Miniconda
+                    Python 3.9
+                    PyTorch CUDA
+                    git/vim/tmux
